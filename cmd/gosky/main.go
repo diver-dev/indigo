@@ -104,6 +104,7 @@ func run(args []string) {
 		readRepoStreamCmd,
 		parseRkey,
 		listLabelsCmd,
+		verifyUserCmd,
 	}
 
 	app.RunAndExitOnError()
@@ -283,28 +284,15 @@ var readRepoStreamCmd = &cli.Command{
 
 				return nil
 			},
-			RepoMigrate: func(migrate *comatproto.SyncSubscribeRepos_Migrate) error {
+			RepoSync: func(sync *comatproto.SyncSubscribeRepos_Sync) error {
 				if jsonfmt {
-					b, err := json.Marshal(migrate)
+					b, err := json.Marshal(sync)
 					if err != nil {
 						return err
 					}
 					fmt.Println(string(b))
 				} else {
-					fmt.Printf("(%d) RepoMigrate: %s moving to: %s\n", migrate.Seq, migrate.Did, *migrate.MigrateTo)
-				}
-
-				return nil
-			},
-			RepoHandle: func(handle *comatproto.SyncSubscribeRepos_Handle) error {
-				if jsonfmt {
-					b, err := json.Marshal(handle)
-					if err != nil {
-						return err
-					}
-					fmt.Println(string(b))
-				} else {
-					fmt.Printf("(%d) RepoHandle: %s (changed to: %s)\n", handle.Seq, handle.Did, handle.Handle)
+					fmt.Printf("(%d) Sync: %s\n", sync.Seq, sync.Did)
 				}
 
 				return nil
@@ -322,20 +310,6 @@ var readRepoStreamCmd = &cli.Command{
 				}
 
 				return nil
-			},
-			RepoTombstone: func(tomb *comatproto.SyncSubscribeRepos_Tombstone) error {
-				if jsonfmt {
-					b, err := json.Marshal(tomb)
-					if err != nil {
-						return err
-					}
-					fmt.Println(string(b))
-				} else {
-					fmt.Printf("(%d) Tombstone: %s\n", tomb.Seq, tomb.Did)
-				}
-
-				return nil
-
 			},
 			// TODO: all the other event types
 			Error: func(errf *events.ErrorFrame) error {
@@ -811,6 +785,66 @@ var listLabelsCmd = &cli.Command{
 				break
 			}
 		}
+		return nil
+	},
+}
+
+var verifyUserCmd = &cli.Command{
+	Name:  "verify-user",
+	Usage: "create a feed generator record",
+	Flags: []cli.Flag{},
+	Action: func(cctx *cli.Context) error {
+		xrpcc, err := cliutil.GetXrpcClient(cctx, true)
+		if err != nil {
+			return err
+		}
+
+		ctx := context.TODO()
+		arg := cctx.Args().First()
+
+		idf, err := syntax.ParseAtIdentifier(arg)
+		if err != nil {
+			return err
+		}
+
+		ident, err := identity.DefaultDirectory().Lookup(ctx, *idf)
+		if err != nil {
+			return err
+		}
+
+		profrec, err := atproto.RepoGetRecord(ctx, xrpcc, "", "app.bsky.actor.profile", ident.DID.String(), "self")
+		if err != nil {
+			return err
+		}
+
+		ap, ok := profrec.Value.Val.(*bsky.ActorProfile)
+		if !ok {
+			return fmt.Errorf("got wrong record type back")
+		}
+
+		var dn string
+		if ap.DisplayName != nil {
+			dn = *ap.DisplayName
+		}
+
+		rec := &lexutil.LexiconTypeDecoder{Val: &bsky.GraphVerification{
+			CreatedAt:   time.Now().Format(util.ISO8601),
+			DisplayName: dn,
+			Handle:      ident.Handle.String(),
+			Subject:     ident.DID.String(),
+		}}
+
+		resp, err := atproto.RepoCreateRecord(ctx, xrpcc, &atproto.RepoCreateRecord_Input{
+			Collection: "app.bsky.graph.verification",
+			Repo:       xrpcc.Auth.Did,
+			Record:     rec,
+		})
+		if err != nil {
+			return err
+		}
+
+		fmt.Println(resp.Uri)
+
 		return nil
 	},
 }
