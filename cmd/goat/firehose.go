@@ -22,7 +22,6 @@ import (
 	"github.com/bluesky-social/indigo/events/schedulers/parallel"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 
-	"github.com/carlmjohnson/versioninfo"
 	"github.com/gorilla/websocket"
 	"github.com/urfave/cli/v2"
 )
@@ -104,7 +103,7 @@ func runFirehose(cctx *cli.Context) error {
 		SkipHandleVerification: true,
 		TryAuthoritativeDNS:    false,
 		SkipDNSDomainSuffixes:  []string{".bsky.social"},
-		UserAgent:              "goat/" + versioninfo.Short(),
+		UserAgent:              *userAgent(),
 	}
 	cdir := identity.NewCacheDirectory(&bdir, 1_000_000, time.Hour*24, time.Minute*2, time.Minute*5)
 
@@ -141,13 +140,19 @@ func runFirehose(cctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("invalid relayHost URI: %w", err)
 	}
+	switch u.Scheme {
+	case "http":
+		u.Scheme = "ws"
+	case "https":
+		u.Scheme = "wss"
+	}
 	u.Path = "xrpc/com.atproto.sync.subscribeRepos"
 	if cctx.IsSet("cursor") {
 		u.RawQuery = fmt.Sprintf("cursor=%d", cctx.Int("cursor"))
 	}
 	urlString := u.String()
 	con, _, err := dialer.Dial(urlString, http.Header{
-		"User-Agent": []string{fmt.Sprintf("goat/%s", versioninfo.Short())},
+		"User-Agent": []string{*userAgent()},
 	})
 	if err != nil {
 		return fmt.Errorf("subscribing to firehose failed (dialing): %w", err)
@@ -181,24 +186,6 @@ func runFirehose(cctx *cli.Context) error {
 			//slog.Debug("account event", "did", evt.Did, "seq", evt.Seq)
 			if !gfc.OpsMode {
 				return gfc.handleAccountEvent(ctx, evt)
-			}
-			return nil
-		},
-		RepoHandle: func(evt *comatproto.SyncSubscribeRepos_Handle) error {
-			if gfc.VerifyBasic {
-				slog.Info("deprecated event type", "eventType", "handle", "did", evt.Did, "seq", evt.Seq)
-			}
-			return nil
-		},
-		RepoMigrate: func(evt *comatproto.SyncSubscribeRepos_Migrate) error {
-			if gfc.VerifyBasic {
-				slog.Info("deprecated event type", "eventType", "migrate", "did", evt.Did, "seq", evt.Seq)
-			}
-			return nil
-		},
-		RepoTombstone: func(evt *comatproto.SyncSubscribeRepos_Tombstone) error {
-			if gfc.VerifyBasic {
-				slog.Info("deprecated event type", "eventType", "handle", "did", evt.Did, "seq", evt.Seq)
 			}
 			return nil
 		},
@@ -277,10 +264,12 @@ func (gfc *GoatFirehoseConsumer) handleSyncEvent(ctx context.Context, evt *comat
 	if gfc.Quiet {
 		return nil
 	}
-	evt.Blocks = nil
+	if !gfc.Blocks {
+		evt.Blocks = nil
+	}
 	out := make(map[string]interface{})
 	out["type"] = "sync"
-	out["commit"] = commit.AsData()
+	out["commit"] = commit.AsData() // NOTE: funky, but helpful, to include this in output
 	out["payload"] = evt
 	b, err := json.Marshal(out)
 	if err != nil {
