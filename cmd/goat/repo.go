@@ -107,7 +107,8 @@ func runRepoExport(cctx *cli.Context) error {
 
 	// create a new API client to connect to the account's PDS
 	xrpcc := xrpc.Client{
-		Host: ident.PDSEndpoint(),
+		Host:      ident.PDSEndpoint(),
+		UserAgent: userAgent(),
 	}
 	if xrpcc.Host == "" {
 		return fmt.Errorf("no PDS endpoint for identity")
@@ -301,7 +302,7 @@ func runRepoUnpack(cctx *cli.Context) error {
 
 		recPath := topDir + "/" + string(k)
 		fmt.Printf("%s.json\n", recPath)
-		os.MkdirAll(filepath.Dir(recPath), os.ModePerm)
+		err = os.MkdirAll(filepath.Dir(recPath), os.ModePerm)
 		if err != nil {
 			return err
 		}
