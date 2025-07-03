@@ -13,32 +13,34 @@ import (
 
 // Represents an atproto identity. Could be a regular user account, or a service account (eg, feed generator)
 type Identity struct {
-	DID syntax.DID `json:"did"`
+	DID syntax.DID
 
 	// Handle/DID mapping must be bi-directionally verified. If that fails, the Handle should be the special 'handle.invalid' value
-	Handle syntax.Handle `json:"handle"`
+	Handle syntax.Handle
 
 	// These fields represent a parsed subset of a DID document. They are all nullable. Note that the services and keys maps do not preserve order, so they don't exactly round-trip DID documents.
-	AlsoKnownAs []string           `json:"alsoKnownAs"`
-	Services    map[string]Service `json:"services"`
-	Keys        map[string]Key     `json:"keys"`
+	AlsoKnownAs []string
+	Services    map[string]ServiceEndpoint
+	Keys        map[string]VerificationMethod
 }
 
-type Key struct {
-	Type               string `json:"type"`
-	PublicKeyMultibase string `json:"publicKeyMultibase"`
+// Sub-field type for [Identity], representing a crytographic public key declared as a "verificationMethod" in the DID document.
+type VerificationMethod struct {
+	Type               string
+	PublicKeyMultibase string
 }
 
-type Service struct {
-	Type string `json:"type"`
-	URL  string `json:"url"`
+// Sub-field type for [Identity], representing a service endpoint URL declared in the DID document.
+type ServiceEndpoint struct {
+	Type string
+	URL  string
 }
 
 // Extracts the information relevant to atproto from an arbitrary DID document.
 //
 // Always returns an invalid Handle field; calling code should only populate that field if it has been bi-directionally verified.
 func ParseIdentity(doc *DIDDocument) Identity {
-	keys := make(map[string]Key, len(doc.VerificationMethod))
+	keys := make(map[string]VerificationMethod, len(doc.VerificationMethod))
 	for _, vm := range doc.VerificationMethod {
 		parts := strings.SplitN(vm.ID, "#", 2)
 		if len(parts) < 2 {
@@ -53,12 +55,12 @@ func ParseIdentity(doc *DIDDocument) Identity {
 			continue
 		}
 		// TODO: verify that ID and type match for atproto-specific services?
-		keys[parts[1]] = Key{
+		keys[parts[1]] = VerificationMethod{
 			Type:               vm.Type,
 			PublicKeyMultibase: vm.PublicKeyMultibase,
 		}
 	}
-	svc := make(map[string]Service, len(doc.Service))
+	svc := make(map[string]ServiceEndpoint, len(doc.Service))
 	for _, s := range doc.Service {
 		parts := strings.SplitN(s.ID, "#", 2)
 		if len(parts) < 2 {
@@ -69,7 +71,7 @@ func ParseIdentity(doc *DIDDocument) Identity {
 			continue
 		}
 		// TODO: verify that ID and type match for atproto-specific services?
-		svc[parts[1]] = Service{
+		svc[parts[1]] = ServiceEndpoint{
 			Type: s.Type,
 			URL:  s.ServiceEndpoint,
 		}
@@ -196,7 +198,11 @@ func (i *Identity) GetServiceEndpoint(id string) string {
 func (i *Identity) DeclaredHandle() (syntax.Handle, error) {
 	for _, u := range i.AlsoKnownAs {
 		if strings.HasPrefix(u, "at://") && len(u) > len("at://") {
-			return syntax.ParseHandle(u[5:])
+			hdl, err := syntax.ParseHandle(u[5:])
+			if err != nil {
+				continue
+			}
+			return hdl.Normalize(), nil
 		}
 	}
 	return "", ErrHandleNotDeclared

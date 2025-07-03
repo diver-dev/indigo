@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
@@ -193,12 +195,12 @@ func (cs *collectionServer) run(cctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("lru init, %w", err)
 	}
-	cs.wg.Add(1)
-	go cs.ingestReceiver()
 	cs.log = log
 	cs.ctx = cctx.Context
 	cs.AdminToken = cctx.String("admin-token")
 	cs.ExepctedAuthHeader = "Bearer " + cs.AdminToken
+	cs.wg.Add(1)
+	go cs.ingestReceiver()
 	pebblePath := cctx.String("pebble")
 	cs.pcd = &PebbleCollectionDirectory{
 		log: cs.log,
@@ -215,17 +217,17 @@ func (cs *collectionServer) run(cctx *cli.Context) error {
 		}
 	}
 	cs.statsCacheFresh.L = &cs.statsCacheLock
-	errchan := make(chan error, 3)
-	apiAddr := cctx.String("api-listen")
+
+	apiServerEcho, err := cs.createApiServer(cctx.Context, cctx.String("api-listen"))
+	if err != nil {
+		return err
+	}
 	cs.wg.Add(1)
-	go func() {
-		errchan <- cs.StartApiServer(cctx.Context, apiAddr)
-	}()
-	metricsAddr := cctx.String("metrics-listen")
+	go func() { cs.StartApiServer(cctx.Context, apiServerEcho) }()
+
+	cs.createMetricsServer(cctx.String("metrics-listen"))
 	cs.wg.Add(1)
-	go func() {
-		errchan <- cs.StartMetricsServer(cctx.Context, metricsAddr)
-	}()
+	go func() { cs.StartMetricsServer(cctx.Context) }()
 
 	upstream := cctx.String("upstream")
 	if upstream != "" {
@@ -247,19 +249,9 @@ func (cs *collectionServer) run(cctx *cli.Context) error {
 		go cs.handleFirehose(fhevents)
 	}
 
-	select {
-	case <-signals:
-		log.Info("received shutdown signal")
-		go errchanlog(cs.log, "server error", errchan)
-		return cs.Shutdown()
-	case err := <-errchan:
-		if err != nil {
-			log.Error("server error", "err", err)
-			go errchanlog(cs.log, "server error", errchan)
-			return cs.Shutdown()
-		}
-	}
-	return nil
+	<-signals
+	log.Info("received shutdown signal")
+	return cs.Shutdown()
 }
 
 func (cs *collectionServer) openDau() error {
@@ -282,30 +274,34 @@ func (cs *collectionServer) openDau() error {
 	return nil
 }
 
-func errchanlog(log *slog.Logger, msg string, errchan <-chan error) {
-	for err := range errchan {
-		log.Error(msg, "err", err)
-	}
-}
-
 func (cs *collectionServer) Shutdown() error {
 	close(cs.shutdown)
-	go func() {
+
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
 		cs.log.Info("metrics shutdown start")
-		sherr := cs.metricsServer.Shutdown(context.Background())
+		sherr := cs.metricsServer.Shutdown(ctx)
 		cs.log.Info("metrics shutdown", "err", sherr)
 	}()
-	cs.log.Info("api shutdown start...")
-	err := cs.apiServer.Shutdown(context.Background())
-	//err := cs.esrv.Shutdown(context.Background())
-	cs.log.Info("api shutdown, thread wait...", "err", err)
-	cs.wg.Wait()
+
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		cs.log.Info("api shutdown start...")
+		err := cs.apiServer.Shutdown(ctx)
+		cs.log.Info("api shutdown, thread wait...", "err", err)
+	}()
+
 	cs.log.Info("threads done, db close...")
-	ee := cs.pcd.Close()
-	if ee != nil {
-		cs.log.Error("failed to shutdown pebble", "err", ee)
+	err := cs.pcd.Close()
+	if err != nil {
+		cs.log.Error("failed to shutdown pebble", "err", err)
 	}
 	cs.log.Info("db done. done.")
+	cs.wg.Wait()
 	return err
 }
 
@@ -385,23 +381,33 @@ func (cs *collectionServer) handleCommit(commit *comatproto.SyncSubscribeRepos_C
 	}
 }
 
-func (cs *collectionServer) StartMetricsServer(ctx context.Context, addr string) error {
-	defer cs.wg.Done()
-	defer cs.log.Info("metrics server exit")
+func (cs *collectionServer) createMetricsServer(addr string) {
+	e := echo.New()
+	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
+	e.Any("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
+
 	cs.metricsServer = &http.Server{
 		Addr:    addr,
-		Handler: promhttp.Handler(),
+		Handler: e,
 	}
-	return cs.metricsServer.ListenAndServe()
 }
 
-func (cs *collectionServer) StartApiServer(ctx context.Context, addr string) error {
+func (cs *collectionServer) StartMetricsServer(ctx context.Context) {
 	defer cs.wg.Done()
-	defer cs.log.Info("api server exit")
+	defer cs.log.Info("metrics server exit")
+
+	err := cs.metricsServer.ListenAndServe()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("error in metrics server", "err", err)
+		os.Exit(1)
+	}
+}
+
+func (cs *collectionServer) createApiServer(ctx context.Context, addr string) (*echo.Echo, error) {
 	var lc net.ListenConfig
 	li, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	e := echo.New()
 	e.HideBanner = true
@@ -431,7 +437,17 @@ func (cs *collectionServer) StartApiServer(ctx context.Context, addr string) err
 		Handler: e,
 	}
 	cs.apiServer = srv
-	return srv.Serve(li)
+	return e, nil
+}
+
+func (cs *collectionServer) StartApiServer(ctx context.Context, e *echo.Echo) {
+	defer cs.wg.Done()
+	defer cs.log.Info("api server exit")
+	err := cs.apiServer.Serve(e.Listener)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("error in api server", "err", err)
+		os.Exit(1)
+	}
 }
 
 const statsCacheDuration = time.Second * 300
@@ -465,14 +481,14 @@ func (cs *collectionServer) getDidsForCollection(c echo.Context) error {
 	collection := c.QueryParam("collection")
 	_, err := syntax.ParseNSID(collection)
 	if err != nil {
-		return c.String(http.StatusBadRequest, fmt.Sprintf("bad collection nsid, %s", err.Error()))
+		return c.JSON(http.StatusBadRequest, xrpc.XRPCError{ErrStr: "BadRequest", Message: fmt.Sprintf("bad collection nsid, %s", err.Error())})
 	}
 	cursor := c.QueryParam("cursor")
 	limit := getLimit(c, 1, 500, 10_000)
 	they, nextCursor, err := cs.pcd.ReadCollection(ctx, collection, cursor, limit)
 	if err != nil {
 		slog.Error("ReadCollection", "collection", collection, "cursor", cursor, "limit", limit, "err", err)
-		return c.String(http.StatusInternalServerError, "oops")
+		return c.JSON(http.StatusInternalServerError, xrpc.XRPCError{ErrStr: "DatabaseError", Message: "failed to read DIDs for collection"})
 	}
 	cs.log.Info("getDidsForCollection", "collection", collection, "cursor", cursor, "limit", limit, "count", len(they), "nextCursor", nextCursor)
 	var out comatproto.SyncListReposByCollection_Output
@@ -620,7 +636,7 @@ func (cs *collectionServer) listCollections(c echo.Context) error {
 	if stalesecStr != "" && cs.isAdmin(c) {
 		stalesec, err := strconv.ParseInt(stalesecStr, 10, 64)
 		if err != nil {
-			return c.String(http.StatusBadRequest, "bad stalesec")
+			return c.JSON(http.StatusBadRequest, xrpc.XRPCError{ErrStr: "BadRequest", Message: "invalid 'stalesec' query parameter"})
 		}
 		if stalesec == 0 {
 			stalenessAllowed = 1
@@ -632,7 +648,7 @@ func (cs *collectionServer) listCollections(c echo.Context) error {
 	stats, err := cs.getStatsCache(stalenessAllowed)
 	if err != nil {
 		slog.Error("getStatsCache", "err", err)
-		return c.String(http.StatusInternalServerError, "oops")
+		return c.JSON(http.StatusInternalServerError, xrpc.XRPCError{ErrStr: "DatabaseError", Message: "failed to read stats"})
 	}
 	cursor := c.QueryParam("cursor")
 	collections, hasQueryCollections := c.QueryParams()["c"]
@@ -705,6 +721,9 @@ func (cs *collectionServer) ingestReceiver() {
 			} else {
 				errcount = 0
 			}
+		case <-cs.shutdown:
+			cs.log.Info("shutting down ingestReceiver")
+			return
 		}
 		if errcount > 10 {
 			cs.log.Error("ingestReceiver too many errors")
@@ -852,7 +871,7 @@ func (cs *collectionServer) isAdmin(c echo.Context) bool {
 func (cs *collectionServer) crawlPds(c echo.Context) error {
 	isAdmin := cs.isAdmin(c)
 	if !isAdmin {
-		return c.JSON(http.StatusForbidden, CrawlRequestResponse{Error: "nope"})
+		return c.JSON(http.StatusForbidden, xrpc.XRPCError{ErrStr: "AdminRequired", Message: "this endpoint requires admin auth"})
 	}
 	hostQ := c.QueryParam("host")
 	if hostQ != "" {
@@ -864,7 +883,7 @@ func (cs *collectionServer) crawlPds(c echo.Context) error {
 	err := c.Bind(&req)
 	if err != nil {
 		cs.log.Info("bad crawl bind", "err", err)
-		return c.String(http.StatusBadRequest, err.Error())
+		return c.JSON(http.StatusBadRequest, xrpc.XRPCError{ErrStr: "BadRequest", Message: fmt.Sprintf("failed to parse body: %s", err)})
 	}
 	if req.Host != "" {
 		go cs.crawlThread(req.Host)
@@ -958,7 +977,7 @@ type HostCrawl struct {
 func (cs *collectionServer) crawlStatus(c echo.Context) error {
 	authHeader := c.Request().Header.Get("Authorization")
 	if authHeader != cs.ExepctedAuthHeader {
-		return c.JSON(http.StatusForbidden, CrawlRequestResponse{Error: "nope"})
+		return c.JSON(http.StatusBadRequest, xrpc.XRPCError{ErrStr: "AdminAuthRequired", Message: "this endpoint requires admin-level auth"})
 	}
 	var out CrawlStatusResponse
 	out.HostCrawls = make(map[string]HostCrawl)
@@ -977,7 +996,7 @@ func (cs *collectionServer) crawlStatus(c echo.Context) error {
 
 func (cs *collectionServer) healthz(c echo.Context) error {
 	// TODO: check database or upstream health?
-	return c.String(http.StatusOK, "ok")
+	return c.JSON(http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func loadBadwords(path string) (*BadwordsRE, error) {

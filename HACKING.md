@@ -1,11 +1,11 @@
 
 ## git repo contents
 
-Run with, eg, `go run ./cmd/relay`):
+Run with, eg, `go run ./cmd/rainbow`):
 
 - `cmd/bigsky`: relay daemon
 - `cmd/relay`: new (sync v1.1) relay daemon
-- `cmd/palomar`: search indexer and query servcie (OpenSearch)
+- `cmd/palomar`: search indexer and query service (OpenSearch)
 - `cmd/gosky`: client CLI for talking to a PDS
 - `cmd/lexgen`: codegen tool for lexicons (Lexicon JSON to Go package)
 - `cmd/stress`: connects to local/default PDS and creates a ton of random posts
@@ -26,7 +26,7 @@ Packages:
     - `api/bsky`: generated types for `app.bsky` lexicon
     - `api/chat`: generated types for `chat.bsky` lexicon
     - `api/ozone`: generated types for `tools.ozone` lexicon
-- `atproto/crypto`: crytographic helpers (signing, key generation and serialization)
+- `atproto/crypto`: cryptographic helpers (signing, key generation and serialization)
 - `atproto/syntax`: string types and parsers for identifiers, datetimes, etc
 - `atproto/identity`: DID and handle resolution
 - `atproto/data`: helpers for atproto data as JSON or CBOR with unknown schema
@@ -116,7 +116,7 @@ Set the log level to be more verbose, using an env variable:
 Running against local typescript PDS in `dev-env` mode:
 
 	# as "alice" user
-	go run ./cmd/gosky/ --pds http://localhost:2583 createSession alice.test hunter2 > bsky.auth
+	go run ./cmd/gosky/ --pds-host http://localhost:2583 account create-session alice.test hunter2 > bsky.auth
 
 The `bsky.auth` file is the default place that `gosky` and other client commands will look for auth info.
 

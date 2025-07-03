@@ -84,7 +84,8 @@ func runBlobExport(cctx *cli.Context) error {
 
 	// create a new API client to connect to the account's PDS
 	xrpcc := xrpc.Client{
-		Host: pdsHost,
+		Host:      pdsHost,
+		UserAgent: userAgent(),
 	}
 	if xrpcc.Host == "" {
 		return fmt.Errorf("no PDS endpoint for identity")
@@ -112,7 +113,8 @@ func runBlobExport(cctx *cli.Context) error {
 			}
 			blobBytes, err := comatproto.SyncGetBlob(ctx, &xrpcc, cidStr, ident.DID.String())
 			if err != nil {
-				return err
+				fmt.Printf("%s\tfailed %s\n", blobPath, err)
+				continue
 			}
 			if err := os.WriteFile(blobPath, blobBytes, 0666); err != nil {
 				return err
@@ -141,7 +143,8 @@ func runBlobList(cctx *cli.Context) error {
 
 	// create a new API client to connect to the account's PDS
 	xrpcc := xrpc.Client{
-		Host: ident.PDSEndpoint(),
+		Host:      ident.PDSEndpoint(),
+		UserAgent: userAgent(),
 	}
 	if xrpcc.Host == "" {
 		return fmt.Errorf("no PDS endpoint for identity")
@@ -182,7 +185,8 @@ func runBlobDownload(cctx *cli.Context) error {
 
 	// create a new API client to connect to the account's PDS
 	xrpcc := xrpc.Client{
-		Host: ident.PDSEndpoint(),
+		Host:      ident.PDSEndpoint(),
+		UserAgent: userAgent(),
 	}
 	if xrpcc.Host == "" {
 		return fmt.Errorf("no PDS endpoint for identity")

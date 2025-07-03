@@ -40,11 +40,6 @@ type handleBody struct {
 	DID syntax.DID `json:"did"`
 }
 
-type errorBody struct {
-	Name    string `json:"error"`
-	Message string `json:"message,omitempty"`
-}
-
 func NewAPIDirectory(host string) APIDirectory {
 	return APIDirectory{
 		Client: &http.Client{
@@ -158,6 +153,7 @@ func (dir *APIDirectory) ResolveDID(ctx context.Context, did syntax.DID) (*ident
 }
 
 func (dir *APIDirectory) ResolveHandle(ctx context.Context, handle syntax.Handle) (syntax.DID, error) {
+	handle = handle.Normalize()
 	var body handleBody
 	u := dir.Host + "/xrpc/com.atproto.identity.resolveHandle?handle=" + handle.String()
 

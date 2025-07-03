@@ -3,7 +3,7 @@
 #   podman build -f ./cmd/relay/Dockerfile -t relay .
 
 ### Compile stage
-FROM golang:1.23-alpine3.20 AS build-env
+FROM golang:1.24-alpine3.22 AS build-env
 RUN apk add --no-cache build-base make git
 
 ADD . /dockerbuild
@@ -19,14 +19,14 @@ FROM node:18-alpine as web-builder
 
 WORKDIR /app
 
-COPY ts/bgs-dash /app/
+COPY cmd/relay/relay-admin-ui /app/
 
 RUN yarn install --frozen-lockfile
 
 RUN yarn build
 
 ### Run stage
-FROM alpine:3.20
+FROM alpine:3.22
 
 RUN apk add --no-cache --update dumb-init ca-certificates runit
 ENTRYPOINT ["dumb-init", "--"]
@@ -42,7 +42,7 @@ ENV TZ=Etc/UTC
 
 EXPOSE 2470
 
-CMD ["/relay"]
+CMD ["/relay", "serve"]
 
 LABEL org.opencontainers.image.source=https://github.com/bluesky-social/indigo
 LABEL org.opencontainers.image.description="atproto Relay"
